@@ -10,7 +10,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from flask import Flask
 
-# --- SERVIDOR WEB FLASK (Para mantener activo a Lumen en Render) ---
+# --- SERVIDOR WEB FLASK (Mantener activo a Lumen en Render) ---
 app = Flask("")
 
 
@@ -31,10 +31,72 @@ def keep_alive():
 # --- BASE DE DATOS Y CONFIGURACIÓN ---
 DB_NAME = "elaris_lumen.db"
 
+# --- D&D 2024: RAZAS Y CLASES OFICIALES ---
+VALID_RACES = [
+    "Humano",
+    "Elfo",
+    "Enano",
+    "Halfling",
+    "Orco",
+    "Tiefling",
+    "Dragonborn",
+    "Gnomo",
+    "Goliath",
+    "Aasimar",
+]
+
 CLASS_GROWTH = {
-    "GUERRERO": {"hp": 25, "fuerza": 3, "defensa": 2, "agilidad": 1, "magia": 0},
-    "MAGO": {"hp": 10, "fuerza": 0, "defensa": 1, "agilidad": 1, "magia": 4},
-    "PÍCARO": {"hp": 15, "fuerza": 2, "defensa": 1, "agilidad": 4, "magia": 1},
+    "BARBARO": {"hp": 30, "fuerza": 4, "defensa": 2, "agilidad": 1, "magia": 0},
+    "BARDO": {"hp": 15, "fuerza": 0, "defensa": 1, "agilidad": 2, "magia": 4},
+    "BRUJO": {"hp": 15, "fuerza": 0, "defensa": 1, "agilidad": 1, "magia": 4},
+    "CLÉRIGO": {"hp": 20, "fuerza": 2, "defensa": 3, "agilidad": 0, "magia": 3},
+    "DRUIDA": {"hp": 18, "fuerza": 1, "defensa": 2, "agilidad": 1, "magia": 4},
+    "EXPLORADOR": {"hp": 20, "fuerza": 2, "defensa": 1, "agilidad": 3, "magia": 1},
+    "GUERRERO": {"hp": 25, "fuerza": 3, "defensa": 3, "agilidad": 1, "magia": 0},
+    "HECHICERO": {"hp": 12, "fuerza": 0, "defensa": 1, "agilidad": 1, "magia": 5},
+    "MAGO": {"hp": 10, "fuerza": 0, "defensa": 1, "agilidad": 1, "magia": 5},
+    "MONJE": {"hp": 18, "fuerza": 2, "defensa": 1, "agilidad": 4, "magia": 0},
+    "PALADÍN": {"hp": 25, "fuerza": 3, "defensa": 3, "agilidad": 0, "magia": 2},
+    "PÍCARO": {"hp": 15, "fuerza": 1, "defensa": 1, "agilidad": 4, "magia": 0},
+}
+
+# --- SISTEMA DE DIFICULTADES Y MAZMORRAS AJUSTADO ---
+DUNGEON_TIERS = {
+    "Fácil": {
+        "weight": 50,
+        "dc": 10,
+        "loot": "Mineral de Hierro",
+        "qty": (1, 3),
+        "soles": 50,
+    },
+    "Normal": {
+        "weight": 30,
+        "dc": 14,
+        "loot": "Hongo Abisal",
+        "qty": (2, 4),
+        "soles": 150,
+    },
+    "Difícil": {
+        "weight": 13,
+        "dc": 18,
+        "loot": "Madera Antigua",
+        "qty": (3, 5),
+        "soles": 400,
+    },
+    "Épica": {
+        "weight": 6,
+        "dc": 22,
+        "loot": "Fragmento de Alma",
+        "qty": (4, 6),
+        "soles": 1000,
+    },
+    "Legendaria": {
+        "weight": 1,
+        "dc": 26,
+        "loot": "Hierba Curativa",
+        "qty": (5, 8),
+        "soles": 2500,
+    },
 }
 
 CRAFTING_RECIPES = {
@@ -50,19 +112,10 @@ DIFFICULTIES = {
     "Legendaria": {"exp": 1500, "soles": 1500, "copas": 12, "favor": 7},
 }
 
-LOOT_TABLE = [
-    "Mineral de Hierro",
-    "Hongo Abisal",
-    "Madera Antigua",
-    "Fragmento de Alma",
-    "Hierba Curativa",
-]
-
 SLOT_PRICE_COPPER = 10000
 CLAN_COST_COPPER = 5000
 
 
-# --- SISTEMA DE CONVERSIÓN DE CORONAS ---
 def format_currency(total_copper: int, icons: dict) -> str:
   plat = total_copper // 1000
   rem = total_copper % 1000
@@ -100,7 +153,6 @@ async def get_server_icons(db) -> dict:
   return defaults
 
 
-# --- INICIALIZACIÓN DE BASE DE DATOS ---
 async def init_db():
   async with aiosqlite.connect(DB_NAME) as db:
     await db.executescript("""
@@ -122,7 +174,7 @@ async def init_db():
             soles INTEGER DEFAULT 100,
             copas INTEGER DEFAULT 0,
             favor_divino INTEGER DEFAULT 0,
-            daily_explores INTEGER DEFAULT 3,
+            daily_explores INTEGER DEFAULT 2,
             last_daily TEXT DEFAULT '',
             is_active INTEGER DEFAULT 0,
             image_url TEXT DEFAULT '',
@@ -197,7 +249,6 @@ async def init_db():
     await db.commit()
 
 
-# --- FUNCIONES AUXILIARES ---
 def get_required_exp(level: int) -> int:
   return level * 100
 
@@ -284,7 +335,6 @@ async def add_exp_to_character(
   return leveled_up, level
 
 
-# --- MODALES Y VISTAS DE SEGURIDAD Y REGLAS ---
 class RulesAcceptView(discord.ui.View):
 
   def __init__(self, char_modal_data):
@@ -300,8 +350,11 @@ class RulesAcceptView(discord.ui.View):
     async with aiosqlite.connect(DB_NAME) as db:
       await db.execute(
           """
-                INSERT INTO characters (user_id, name, age, race, character_class, clan, is_active, image_url, status)
-                VALUES (?, ?, ?, ?, ?, 'Sin clan', 0, ?, 'pendiente')
+                INSERT INTO characters (
+                    user_id, name, age, race, character_class, clan, 
+                    fuerza, defensa, agilidad, magia, is_active, image_url, status
+                )
+                VALUES (?, ?, ?, ?, ?, 'Sin clan', 10, 10, 10, 10, 0, ?, 'pendiente')
             """,
           (
               interaction.user.id,
@@ -324,19 +377,21 @@ class RulesAcceptView(discord.ui.View):
     )
 
 
-class CharacterModal(discord.ui.Modal, title="Crear Personaje en Elaris"):
+class CharacterModal(discord.ui.Modal, title="Crear Personaje D&D 2024"):
   name_input = discord.ui.TextInput(
-      label="Nombre", placeholder="Ej: Ardan", required=True
+      label="Nombre", placeholder="Ej: Varis Vaelen", required=True
   )
   age_input = discord.ui.TextInput(
-      label="Edad", placeholder="Ej: 24", required=True
+      label="Edad", placeholder="Ej: 28", required=True
   )
   race_input = discord.ui.TextInput(
-      label="Raza", placeholder="Ej: Humano, Elfo...", required=True
+      label="Raza D&D 2024",
+      placeholder="Humano, Elfo, Enano, Halfling, Orco, Tiefling...",
+      required=True,
   )
   class_input = discord.ui.TextInput(
-      label="Clase (Guerrero, Mago, Pícaro)",
-      placeholder="Ej: Guerrero",
+      label="Clase D&D 2024",
+      placeholder="Guerrero, Mago, Pícaro, Bárbaro, Bardo, Clérigo...",
       required=True,
   )
   image_input = discord.ui.TextInput(
@@ -353,27 +408,40 @@ class CharacterModal(discord.ui.Modal, title="Crear Personaje en Elaris"):
           "🦊 La edad debe ser un número entero.", ephemeral=True
       )
 
-    c_class = self.class_input.value.upper()
-    if c_class not in CLASS_GROWTH:
+    race_matched = next(
+        (r for r in VALID_RACES if r.lower() == self.race_input.value.strip().lower()),
+        None,
+    )
+    if not race_matched:
+      races_str = ", ".join(VALID_RACES)
       return await interaction.response.send_message(
-          "🦊 Clase no válida. Elige entre: Guerrero, Mago o Pícaro.",
+          f"🦊 Raza no válida según D&D 2024. Elige entre:\n`{races_str}`",
+          ephemeral=True,
+      )
+
+    c_class_formatted = self.class_input.value.strip().upper()
+    if c_class_formatted not in CLASS_GROWTH:
+      classes_str = ", ".join(CLASS_GROWTH.keys())
+      return await interaction.response.send_message(
+          f"🦊 Clase no válida según D&D 2024. Elige entre:\n`{classes_str}`",
           ephemeral=True,
       )
 
     char_data = {
         "name": self.name_input.value,
         "age": age,
-        "race": self.race_input.value,
-        "c_class": c_class,
+        "race": race_matched,
+        "c_class": c_class_formatted,
         "image": self.image_input.value,
     }
 
     embed = discord.Embed(
         title="⚠️ Normas de Creación de Personaje",
         description=(
-            "1. **No memes o personajes de chiste.**\n2. **No copias exactas**"
-            " de obras existentes (la inspiración sí está permitida).\n3. La"
-            " ficha pasará por revisión antes de poder ser activada."
+            "1. **No memes o personajes de chiste.**\n"
+            "2. **Regla del 10 activa:** Ninguna estadística base puede ser inferior a 10.\n"
+            "3. **No copias exactas** de obras existentes.\n"
+            "4. La ficha pasará por revisión antes de poder ser activada."
         ),
         color=discord.Color.gold(),
     )
@@ -665,13 +733,16 @@ class MissionRewardView(discord.ui.View):
     self.stop()
 
 
+# --- INTERFAZ DE NAVEGACIÓN EN MAZMORRAS AJUSTADA ---
 class DungeonExploreView(discord.ui.View):
 
-  def __init__(self, char_id, stats, abyss_mod):
+  def __init__(self, char_id, stats, abyss_mod, tier_name, tier_info):
     super().__init__(timeout=60)
     self.char_id = char_id
     self.stats = stats
     self.abyss_mod = abyss_mod
+    self.tier_name = tier_name
+    self.tier_info = tier_info
 
   @discord.ui.button(
       label="🗝️ Entrar a la Cueva", style=discord.ButtonStyle.green
@@ -683,13 +754,17 @@ class DungeonExploreView(discord.ui.View):
       child.disabled = True
 
     roll = random.randint(1, 20)
-    total = (
-        roll + max(self.stats["fuerza"], self.stats["agilidad"]) + self.abyss_mod
-    )
+    best_mod = (
+        max(self.stats["fuerza"], self.stats["agilidad"]) - 10
+    ) // 2  # Modificador D&D
+    total = roll + best_mod + self.abyss_mod
+    required_dc = self.tier_info["dc"]
 
-    if total >= 12:
-      found = random.choice(LOOT_TABLE)
-      qty = random.randint(1, 2)
+    if total >= required_dc:
+      qty = random.randint(*self.tier_info["qty"])
+      soles_earned = self.tier_info["soles"]
+      loot_item = self.tier_info["loot"]
+
       async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             """
@@ -697,26 +772,33 @@ class DungeonExploreView(discord.ui.View):
                     VALUES (?, ?, ?)
                     ON CONFLICT(char_id, item_name) DO UPDATE SET quantity = quantity + ?
                 """,
-            (self.char_id, found, qty, qty),
+            (self.char_id, loot_item, qty, qty),
         )
+        await db.execute(
+            "UPDATE characters SET soles = soles + ? WHERE id = ?",
+            (soles_earned, self.char_id),
+        )
+        icons = await get_server_icons(db)
         await db.commit()
 
+      soles_str = format_currency(soles_earned, icons)
       embed = discord.Embed(
-          title="🦊 Exploración Exitosa",
+          title=f"🦊 Mazmorra {self.tier_name}: ¡CONQUISTADA!",
           description=(
-              f"Superaste las trampas de la cueva.\n\n🎲 Tirada: {roll} | Mod."
-              f" Abismo: {self.abyss_mod} | Total: **{total}**\n🎒 Botín:"
-              f" `{found} x{qty}`"
+              f"Superaste los peligros de la cueva (Dificultad {required_dc}).\n\n"
+              f"🎲 **Tirada:** {roll} | **Mod. Atributo:** {best_mod:+d} | **Mod. Abismo:** {self.abyss_mod:+d} = **Total: {total}**\n\n"
+              f"🎒 **Botín Obtenido:** `{loot_item} x{qty}`\n"
+              f"💰 **Recompensa:** {soles_str}"
           ),
           color=discord.Color.green(),
       )
     else:
       embed = discord.Embed(
-          title="🦊 Derrumbe en la Cueva",
+          title=f"🦊 Mazmorra {self.tier_name}: FALLIDA",
           description=(
-              "Tuviste que escapar corriendo antes de quedar atrapado.\n\n🎲"
-              f" Tirada: {roll} | Total: **{total}**\n*Lumen te observa divertido"
-              " desde la salida.*"
+              f"La dificultad superó a tu personaje (Requerido: {required_dc}).\n\n"
+              f"🎲 **Tirada:** {roll} | **Total:** **{total}**\n"
+              "*Tuviste que escapar con las manos vacías antes de ser atrapado.*"
           ),
           color=discord.Color.red(),
       )
@@ -777,7 +859,7 @@ async def daily_weather_task():
     await channel.send(embed=embed)
 
 
-# --- COMANDOS CORE ---
+# --- COMANDOS PRINCIPALES Y DE NAVEGACIÓN ---
 @bot.tree.command(name="lumen", description="Muestra la información de Lumen")
 async def lumen_info(interaction: discord.Interaction):
   embed = discord.Embed(
@@ -850,7 +932,6 @@ async def ayuda(interaction: discord.Interaction):
   await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# --- PERSONAJES, MODERACIÓN Y REVISIÓN ---
 @bot.tree.command(name="crear-personaje", description="Crea un nuevo personaje")
 async def crear_personaje(interaction: discord.Interaction):
   if not await check_command_perm(interaction, "crear-personaje"):
@@ -1066,7 +1147,6 @@ async def mis_personajes(interaction: discord.Interaction):
   await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
-# --- SISTEMA DE PVP BILATERAL ---
 @bot.tree.command(
     name="pvp-consentir", description="Otorga consentimiento de PvP a un usuario"
 )
@@ -1119,7 +1199,6 @@ async def pvp_retirar(interaction: discord.Interaction, oponente: discord.User):
   )
 
 
-# --- MISIONES Y HERRAMIENTAS DE SEGURIDAD ---
 @bot.tree.command(
     name="mision-crear",
     description="Crea una misión con líneas/semáforos y avisos de contenido",
@@ -1163,7 +1242,6 @@ async def mision_crear(
   await interaction.response.send_message(embed=embed)
 
 
-# --- CLANES Y OTROS ---
 @bot.tree.command(
     name="crear-clan",
     description=(
@@ -1251,7 +1329,6 @@ async def comprar_slot(interaction: discord.Interaction):
   )
 
 
-# --- ECONOMÍA Y MOCHILA ---
 @bot.tree.command(
     name="cuenta", description="Muestra la bóveda de tu personaje activo"
 )
@@ -1510,7 +1587,6 @@ async def dar_item(
   )
 
 
-# --- DADOS Y EXPLORACIÓN ---
 @bot.tree.command(name="tirar", description="Lanza dados (Ejemplo: 1d20+3, 2d6)")
 async def tirar(interaction: discord.Interaction, formula: str):
   match = re.match(r"^(\d+)d(\d+)(?:([+-])(\d+))?$", formula.lower().strip())
@@ -1561,7 +1637,7 @@ async def tirar(interaction: discord.Interaction, formula: str):
   await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="prueba", description="Prueba de atributo")
+@bot.tree.command(name="prueba", description="Prueba de atributo D&D")
 async def prueba(interaction: discord.Interaction, atributo: str):
   attr = atributo.lower().strip()
   if attr not in ["fuerza", "defensa", "agilidad", "magia"]:
@@ -1580,21 +1656,25 @@ async def prueba(interaction: discord.Interaction, atributo: str):
     attr_index = {"fuerza": 10, "defensa": 11, "agilidad": 12, "magia": 13}[attr]
     attr_val = char[attr_index]
 
+  mod_dnd = (attr_val - 10) // 2
   roll = random.randint(1, 20)
-  total = roll + attr_val
+  total = roll + mod_dnd
 
   embed = discord.Embed(
       title=f"🎲 Prueba de {atributo.capitalize()} ({char[2]})",
       description=(
-          f"**D20:** {roll}\n**{atributo.capitalize()}:**"
-          f" +{attr_val}\n**Resultado:** **{total}**"
+          f"**D20:** {roll}\n**Atributo:** {attr_val} (Mod. D&D:"
+          f" {mod_dnd:+d})\n**Resultado Total:** **{total}**"
       ),
       color=discord.Color.purple(),
   )
   await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="explorar", description="Explora en busca de botín (3/día)")
+# --- COMANDO EXPLORAR REDISEÑADO CON MAZMORRAS Y PROBABILIDADES ---
+@bot.tree.command(
+    name="explorar", description="Explora en busca de mazmorras (2/día)"
+)
 async def explorar(interaction: discord.Interaction):
   user_id = interaction.user.id
   today = datetime.utcnow().strftime("%Y-%m-%d")
@@ -1616,11 +1696,11 @@ async def explorar(interaction: discord.Interaction):
     )
 
     if last_date != today:
-      explores = 3
+      explores = 2
 
     if explores <= 0:
       return await interaction.response.send_message(
-          "🦊 Has agotado tus exploraciones del día. Vuelve mañana.",
+          "🦊 Has agotado tus 2 exploraciones del día. Vuelve mañana.",
           ephemeral=True,
       )
 
@@ -1638,14 +1718,40 @@ async def explorar(interaction: discord.Interaction):
 
     await db.commit()
 
+  # Probabilidad de encontrar cueva (50% de probabilidad)
+  found_dungeon = random.random() < 0.50
+
+  if not found_dungeon:
+    embed = discord.Embed(
+        title=f"🌿 Exploración Frustrada ({char[2]})",
+        description=(
+            "🦊 Has explorado el territorio durante horas pero **no has hallado ninguna entrada a mazmorra**.\n\n"
+            f"*Intentos restantes hoy: {explores}*"
+        ),
+        color=discord.Color.dark_grey(),
+    )
+    return await interaction.response.send_message(embed=embed)
+
+  # Determinación del Tier por pesos
+  tiers = list(DUNGEON_TIERS.keys())
+  weights = [DUNGEON_TIERS[t]["weight"] for t in tiers]
+  selected_tier_name = random.choices(tiers, weights=weights, k=1)[0]
+  selected_tier_info = DUNGEON_TIERS[selected_tier_name]
+
   view = DungeonExploreView(
-      char_id, {"fuerza": str_, "agilidad": agi}, abyss_mod
+      char_id,
+      {"fuerza": str_, "agilidad": agi},
+      abyss_mod,
+      selected_tier_name,
+      selected_tier_info,
   )
   embed = discord.Embed(
-      title=f"🌿 Entrada a la Cueva Olvidada ({char[2]})",
+      title=f"🌿 ¡Entrada a Mazmorra Encontrada! ({char[2]})",
       description=(
-          "🦊 Has encontrado una cueva. ¿Deseas adentrarte?\n*Intentos"
-          f" restantes hoy: {explores}*"
+          f"🦊 Has localizado una cueva de dificultad **{selected_tier_name}**.\n\n"
+          f"🎯 **Dificultad de Desafío (DC):** {selected_tier_info['dc']}\n"
+          f"🎒 **Posible Botín:** `{selected_tier_info['loot']}` + Coronas de oro/plata\n\n"
+          f"¿Deseas intentar entrar?\n*Intentos restantes hoy: {explores}*"
       ),
       color=discord.Color.dark_blue(),
   )
@@ -1751,7 +1857,7 @@ async def evento_crear(
 
   view = EventJoinView(
       master_name=interaction.user.display_name,
-      max_participants=max_participantes,
+      max_participants=max_participants,
   )
   embed = discord.Embed(
       title=f"📜 EVENTO: {titulo}",
@@ -1790,7 +1896,7 @@ async def mision_recompensa(interaction: discord.Interaction):
   )
 
 
-# --- COMANDOS DE CONFIGURACIÓN Y PERMISOS ---
+# --- CONFIGURACIONES ADMINISTRATIVAS ---
 @bot.tree.command(
     name="config-iconos", description="Configura los emojis del servidor"
 )
