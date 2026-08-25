@@ -58,8 +58,8 @@ LOOT_TABLE = [
     "Hierba Curativa",
 ]
 
-SLOT_PRICE_COPPER = 10000  # Costo de slot adicional en cobre
-CLAN_COST_COPPER = 5000    # Costo para fundar clan en cobre
+SLOT_PRICE_COPPER = 10000
+CLAN_COST_COPPER = 5000
 
 
 # --- SISTEMA DE CONVERSIÓN DE CORONAS ---
@@ -125,7 +125,15 @@ async def init_db():
             daily_explores INTEGER DEFAULT 3,
             last_daily TEXT DEFAULT '',
             is_active INTEGER DEFAULT 0,
-            image_url TEXT DEFAULT ''
+            image_url TEXT DEFAULT '',
+            status TEXT DEFAULT 'pendiente',
+            review_comment TEXT DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS pvp_consent (
+            user_a INTEGER NOT NULL,
+            user_b INTEGER NOT NULL,
+            PRIMARY KEY (user_a, user_b)
         );
 
         CREATE TABLE IF NOT EXISTS character_slots (
@@ -196,12 +204,16 @@ def get_required_exp(level: int) -> int:
 
 async def get_active_character(db, user_id: int):
   async with db.execute(
-      "SELECT * FROM characters WHERE user_id = ? AND is_active = 1", (user_id,)
+      "SELECT * FROM characters WHERE user_id = ? AND is_active = 1 AND status"
+      " = 'aprobado'",
+      (user_id,),
   ) as cursor:
     return await cursor.fetchone()
 
 
-async def check_command_perm(interaction: discord.Interaction, command_name: str) -> bool:
+async def check_command_perm(
+    interaction: discord.Interaction, command_name: str
+) -> bool:
   if interaction.user.guild_permissions.administrator:
     return True
   async with aiosqlite.connect(DB_NAME) as db:
@@ -215,6 +227,16 @@ async def check_command_perm(interaction: discord.Interaction, command_name: str
       required_role = row[0]
       user_role_ids = [r.id for r in interaction.user.roles]
       return required_role in user_role_ids
+
+
+async def has_bilateral_pvp(db, user1_id: int, user2_id: int) -> bool:
+  async with db.execute(
+      "SELECT COUNT(*) FROM pvp_consent WHERE (user_a = ? AND user_b = ?) OR"
+      " (user_a = ? AND user_b = ?)",
+      (user1_id, user2_id, user2_id, user1_id),
+  ) as cursor:
+    count = (await cursor.fetchone())[0]
+    return count >= 2
 
 
 async def add_exp_to_character(
@@ -259,11 +281,49 @@ async def add_exp_to_character(
       (level, current_exp, hp, str_, def_, agi, mag, char_id),
   )
   await db.commit()
-
   return leveled_up, level
 
 
-# --- MODALES Y VISTAS ---
+# --- MODALES Y VISTAS DE SEGURIDAD Y REGLAS ---
+class RulesAcceptView(discord.ui.View):
+
+  def __init__(self, char_modal_data):
+    super().__init__(timeout=120)
+    self.data = char_modal_data
+
+  @discord.ui.button(
+      label="Acepto las reglas de creación", style=discord.ButtonStyle.green
+  )
+  async def accept(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    async with aiosqlite.connect(DB_NAME) as db:
+      await db.execute(
+          """
+                INSERT INTO characters (user_id, name, age, race, character_class, clan, is_active, image_url, status)
+                VALUES (?, ?, ?, ?, ?, 'Sin clan', 0, ?, 'pendiente')
+            """,
+          (
+              interaction.user.id,
+              self.data["name"],
+              self.data["age"],
+              self.data["race"],
+              self.data["c_class"],
+              self.data["image"],
+          ),
+      )
+      await db.commit()
+
+    await interaction.response.edit_message(
+        content=(
+            f"📜 Ficha de **{self.data['name']}** enviada correctamente."
+            " Queda en estado **pendiente** a la espera de revisión por un"
+            " moderador."
+        ),
+        view=None,
+    )
+
+
 class CharacterModal(discord.ui.Modal, title="Crear Personaje en Elaris"):
   name_input = discord.ui.TextInput(
       label="Nombre", placeholder="Ej: Ardan", required=True
@@ -300,30 +360,26 @@ class CharacterModal(discord.ui.Modal, title="Crear Personaje en Elaris"):
           ephemeral=True,
       )
 
-    async with aiosqlite.connect(DB_NAME) as db:
-      await db.execute(
-          "UPDATE characters SET is_active = 0 WHERE user_id = ?",
-          (interaction.user.id,),
-      )
-      await db.execute(
-          """
-                INSERT INTO characters (user_id, name, age, race, character_class, clan, is_active, image_url)
-                VALUES (?, ?, ?, ?, ?, 'Sin clan', 1, ?)
-            """,
-          (
-              interaction.user.id,
-              self.name_input.value,
-              age,
-              self.race_input.value,
-              c_class,
-              self.image_input.value,
-          ),
-      )
-      await db.commit()
+    char_data = {
+        "name": self.name_input.value,
+        "age": age,
+        "race": self.race_input.value,
+        "c_class": c_class,
+        "image": self.image_input.value,
+    }
 
+    embed = discord.Embed(
+        title="⚠️ Normas de Creación de Personaje",
+        description=(
+            "1. **No memes o personajes de chiste.**\n2. **No copias exactas**"
+            " de obras existentes (la inspiración sí está permitida).\n3. La"
+            " ficha pasará por revisión antes de poder ser activada."
+        ),
+        color=discord.Color.gold(),
+    )
+    view = RulesAcceptView(char_data)
     await interaction.response.send_message(
-        f"🦊 Se ha forjado el alma de **{self.name_input.value}**. Ahora es tu"
-        " personaje activo."
+        embed=embed, view=view, ephemeral=True
     )
 
 
@@ -358,12 +414,10 @@ class EventJoinView(discord.ui.View):
       msg = "⚔️ ¡Te has inscrito en la misión!"
 
     button.label = f"Alistarse ({len(self.participants)}/{self.max_participants})"
-
     embed = interaction.message.embeds[0]
     part_list = (
         "\n".join(self.participants) if self.participants else "Nadie aún."
     )
-
     embed.set_field_at(
         0,
         name=f"👥 Participantes ({len(self.participants)}/{self.max_participants})",
@@ -392,6 +446,17 @@ class SwitchCharacterSelect(discord.ui.Select):
   async def callback(self, interaction: discord.Interaction):
     selected_id = int(self.values[0])
     async with aiosqlite.connect(DB_NAME) as db:
+      async with db.execute(
+          "SELECT status FROM characters WHERE id = ?", (selected_id,)
+      ) as cursor:
+        row = await cursor.fetchone()
+        if not row or row[0] != "aprobado":
+          return await interaction.response.send_message(
+              "🦊 Solo puedes activar fichas que hayan sido aprobadas por"
+              " moderación.",
+              ephemeral=True,
+          )
+
       await db.execute(
           "UPDATE characters SET is_active = 0 WHERE user_id = ?",
           (interaction.user.id,),
@@ -475,10 +540,8 @@ class CatalogPaginator(discord.ui.View):
     embed.add_field(name="Precio", value=price_formatted, inline=True)
     stock_str = "Infinito" if item[5] == -1 else str(item[5])
     embed.add_field(name="Stock", value=stock_str, inline=True)
-
     if item[4]:
       embed.set_image(url=item[4])
-
     embed.set_footer(
         text=f"Producto {self.index + 1}/{len(self.products)} | ID: {item[0]}"
     )
@@ -549,7 +612,6 @@ class MissionRewardView(discord.ui.View):
       return await interaction.response.send_message(
           "🦊 No eres el Master de esta sesión.", ephemeral=True
       )
-
     if not self.selected_users:
       return await interaction.response.send_message(
           "🦊 Selecciona al menos a un participante.", ephemeral=True
@@ -574,7 +636,6 @@ class MissionRewardView(discord.ui.View):
                     """,
               (rewards["soles"], rewards["copas"], rewards["favor"], char_id),
           )
-
           leveled_up, new_lvl = await add_exp_to_character(
               db, char_id, rewards["exp"]
           )
@@ -583,7 +644,6 @@ class MissionRewardView(discord.ui.View):
                 f"✨ **{active_char[2]}** ({user.display_name}) subió al **Nivel"
                 f" {new_lvl}**!"
             )
-
       await db.commit()
 
     embed = discord.Embed(
@@ -601,7 +661,6 @@ class MissionRewardView(discord.ui.View):
       embed.add_field(
           name="🦊 Subidas de Nivel", value="\n".join(lvl_msgs), inline=False
       )
-
     await interaction.response.send_message(embed=embed)
     self.stop()
 
@@ -661,7 +720,6 @@ class DungeonExploreView(discord.ui.View):
           ),
           color=discord.Color.red(),
       )
-
     await interaction.response.edit_message(embed=embed, view=self)
 
 
@@ -679,7 +737,6 @@ async def on_ready():
   print(f"🦊 Lumen se ha despertado como {bot.user}")
 
 
-# --- TAREA AUTOMATIZADA DE CLIMA ---
 @tasks.loop(hours=24)
 async def daily_weather_task():
   await bot.wait_until_ready()
@@ -698,7 +755,6 @@ async def daily_weather_task():
         ("Tormenta de Almas", 2, "La energía del Abismo fortalece los dados."),
     ]
     st_name, st_mod, st_weather = random.choice(states)
-
     await db.execute(
         """
             UPDATE abyss_state SET state_name = ?, modifier = ?, weather = ? WHERE id = 1
@@ -750,9 +806,14 @@ async def ayuda(interaction: discord.Interaction):
   embed.add_field(
       name="📜 Personajes",
       value=(
-          "`/crear-personaje` | `/mis-personajes` | `/perfil` | `/crear-clan` |"
-          " `/comprar-slot`"
+          "`/crear-personaje` | `/personaje-estado` | `/mis-personajes` |"
+          " `/perfil` | `/crear-clan` | `/comprar-slot`"
       ),
+      inline=False,
+  )
+  embed.add_field(
+      name="⚔️ PvP & Seguridad",
+      value="`/pvp-consentir` | `/pvp-retirar` | `/mision-crear`",
       inline=False,
   )
   embed.add_field(
@@ -776,10 +837,11 @@ async def ayuda(interaction: discord.Interaction):
 
   if interaction.user.guild_permissions.administrator:
     embed.add_field(
-        name="🔮 Configuración & Master",
+        name="🔮 Moderación & Master",
         value=(
-            "`/mision-recompensa` | `/dar-item` | `/evento-crear` |"
-            " `/config-iconos` | `/config-clima-canal` | `/config-permisos`"
+            "`/personaje-revisar` | `/mision-recompensa` | `/dar-item` |"
+            " `/evento-crear` | `/config-iconos` | `/config-clima-canal` |"
+            " `/config-permisos`"
         ),
         inline=False,
     )
@@ -788,7 +850,7 @@ async def ayuda(interaction: discord.Interaction):
   await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# --- PERSONAJE, PERFIL Y CLANES ---
+# --- PERSONAJES, MODERACIÓN Y REVISIÓN ---
 @bot.tree.command(name="crear-personaje", description="Crea un nuevo personaje")
 async def crear_personaje(interaction: discord.Interaction):
   if not await check_command_perm(interaction, "crear-personaje"):
@@ -811,7 +873,6 @@ async def crear_personaje(interaction: discord.Interaction):
       extra_slots = slot_row[0] if slot_row else 0
 
     max_allowed = 3 + extra_slots
-
     if count >= max_allowed:
       return await interaction.response.send_message(
           f"🦊 Has alcanzado el límite de personajes permitido ({count}/{max_allowed})."
@@ -820,6 +881,92 @@ async def crear_personaje(interaction: discord.Interaction):
       )
 
   await interaction.response.send_modal(CharacterModal())
+
+
+@bot.tree.command(
+    name="personaje-estado",
+    description="Consulta el estado de tus fichas registradas",
+)
+async def personaje_estado(interaction: discord.Interaction):
+  async with aiosqlite.connect(DB_NAME) as db:
+    async with db.execute(
+        "SELECT id, name, status, review_comment, is_active FROM characters"
+        " WHERE user_id = ?",
+        (interaction.user.id,),
+    ) as cursor:
+      rows = await cursor.fetchall()
+
+  if not rows:
+    return await interaction.response.send_message(
+        "🦊 No tienes personajes registrados.", ephemeral=True
+    )
+
+  embed = discord.Embed(
+      title="📜 Estado de tus Personajes", color=discord.Color.blue()
+  )
+  for char_id, name, status, comment, is_active in rows:
+    active_tag = " 🌟 [ACTIVO]" if is_active == 1 else ""
+    st_emoji = "✅" if status == "aprobado" else "⏳" if status == "pendiente" else "❌"
+    val = f"**Estado:** {st_emoji} {status.capitalize()}"
+    if comment:
+      val += f"\n**Comentario:** {comment}"
+    embed.add_field(name=f"{name} (ID: {char_id}){active_tag}", value=val, inline=False)
+
+  await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(
+    name="personaje-revisar",
+    description="Aprueba o rechaza la ficha de un usuario",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def personaje_revisar(
+    interaction: discord.Interaction,
+    id_personaje: int,
+    accion: str,
+    comentario: str = "",
+):
+  acc = accion.lower().strip()
+  if acc not in ["aprobar", "rechazar"]:
+    return await interaction.response.send_message(
+        "🦊 Acción inválida. Usa `aprobar` o `rechazar`.", ephemeral=True
+    )
+
+  async with aiosqlite.connect(DB_NAME) as db:
+    async with db.execute(
+        "SELECT user_id, name FROM characters WHERE id = ?", (id_personaje,)
+    ) as cursor:
+      row = await cursor.fetchone()
+      if not row:
+        return await interaction.response.send_message(
+            "🦊 No se encontró esa ficha.", ephemeral=True
+        )
+      target_user_id, char_name = row
+
+    new_status = "aprobado" if acc == "aprobar" else "rechazado"
+
+    if new_status == "aprobado":
+      await db.execute(
+          "UPDATE characters SET is_active = 0 WHERE user_id = ?",
+          (target_user_id,),
+      )
+      await db.execute(
+          "UPDATE characters SET status = 'aprobado', review_comment = ?,"
+          " is_active = 1 WHERE id = ?",
+          (comentario, id_personaje),
+      )
+    else:
+      await db.execute(
+          "UPDATE characters SET status = 'rechazado', review_comment = ?,"
+          " is_active = 0 WHERE id = ?",
+          (comentario, id_personaje),
+      )
+
+    await db.commit()
+
+  await interaction.response.send_message(
+      f"📜 Ficha **{char_name}** (ID: {id_personaje}) ha sido **{new_status}**."
+  )
 
 
 @bot.tree.command(name="perfil", description="Muestra el perfil del personaje")
@@ -831,7 +978,8 @@ async def perfil(interaction: discord.Interaction, usuario: discord.User = None)
 
   if not row:
     return await interaction.response.send_message(
-        "🦊 Esa alma no posee un personaje activo en Elaris.", ephemeral=True
+        "🦊 Esa alma no posee un personaje activo y aprobado en Elaris.",
+        ephemeral=True,
     )
 
   name, age, race, c_class, clan = row[2], row[3], row[4], row[5], row[6]
@@ -904,18 +1052,118 @@ async def mis_personajes(interaction: discord.Interaction):
   )
   for char in chars:
     active_tag = " 🌟 **[ACTIVO]**" if char[20] == 1 else ""
+    st_str = f"({char[22].capitalize()})" if len(char) > 22 else ""
     embed.add_field(
-        name=f"{char[2]} (Nvl. {char[7]}){active_tag}",
+        name=f"{char[2]} (Nvl. {char[7]}) {st_str}{active_tag}",
         value=(
             f"**Clase:** {char[5]} | **Raza:** {char[4]} | **Clan:** {char[6]}"
         ),
         inline=False,
     )
 
-  view = SwitchCharacterView(chars)
+  approved_chars = [c for c in chars if len(c) > 22 and c[22] == "aprobado"]
+  view = SwitchCharacterView(approved_chars) if approved_chars else None
   await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
+# --- SISTEMA DE PVP BILATERAL ---
+@bot.tree.command(
+    name="pvp-consentir", description="Otorga consentimiento de PvP a un usuario"
+)
+async def pvp_consentir(
+    interaction: discord.Interaction, oponente: discord.User
+):
+  if oponente.id == interaction.user.id:
+    return await interaction.response.send_message(
+        "🦊 No puedes darte consentimiento PvP a ti mismo.", ephemeral=True
+    )
+
+  async with aiosqlite.connect(DB_NAME) as db:
+    await db.execute(
+        "INSERT OR IGNORE INTO pvp_consent (user_a, user_b) VALUES (?, ?)",
+        (interaction.user.id, oponente.id),
+    )
+    await db.commit()
+    is_active = await has_bilateral_pvp(db, interaction.user.id, oponente.id)
+
+  if is_active:
+    await interaction.response.send_message(
+        f"⚔️ **¡PvP Activado!** Tanto {interaction.user.mention} como"
+        f" {oponente.mention} han aceptado el combate libre entre sus"
+        " personajes."
+    )
+  else:
+    await interaction.response.send_message(
+        f"🛡️ Has registrado tu consentimiento PvP hacia {oponente.mention}."
+        " El PvP se activará solo cuando el otro usuario también acepte con"
+        " `/pvp-consentir`.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="pvp-retirar", description="Revoca el consentimiento de PvP con un usuario"
+)
+async def pvp_retirar(interaction: discord.Interaction, oponente: discord.User):
+  async with aiosqlite.connect(DB_NAME) as db:
+    await db.execute(
+        "DELETE FROM pvp_consent WHERE (user_a = ? AND user_b = ?) OR (user_a ="
+        " ? AND user_b = ?)",
+        (interaction.user.id, oponente.id, oponente.id, interaction.user.id),
+    )
+    await db.commit()
+
+  await interaction.response.send_message(
+      f"🛡️ Consentimiento PvP revocado entre {interaction.user.mention} y"
+      f" {oponente.mention}. Combatir ahora está restringido."
+  )
+
+
+# --- MISIONES Y HERRAMIENTAS DE SEGURIDAD ---
+@bot.tree.command(
+    name="mision-crear",
+    description="Crea una misión con líneas/semáforos y avisos de contenido",
+)
+async def mision_crear(
+    interaction: discord.Interaction,
+    titulo: str,
+    descripcion: str,
+    aplica_lineas_semaforos: bool,
+    advertencias_contenido: str = "Ninguna",
+):
+  if not await check_command_perm(interaction, "mision-crear"):
+    return await interaction.response.send_message(
+        "🦊 No tienes permiso para publicar misiones.", ephemeral=True
+    )
+
+  if not aplica_lineas_semaforos:
+    return await interaction.response.send_message(
+        "🦊 Todas las misiones deben aplicar el protocolo de líneas y"
+        " semáforos para la seguridad de rol.",
+        ephemeral=True,
+    )
+
+  embed = discord.Embed(
+      title=f"📜 NUEVA MISIÓN: {titulo}",
+      description=f"{descripcion}",
+      color=discord.Color.dark_purple(),
+  )
+  embed.add_field(
+      name="🛡️ Herramientas de Seguridad",
+      value="✅ Líneas y Semáforos obligatorios.",
+      inline=False,
+  )
+  embed.add_field(
+      name="⚠️ Avisos de Contenido",
+      value=f"`{advertencias_contenido}`",
+      inline=False,
+  )
+  embed.set_footer(text=f"🧙‍♂️ Master: {interaction.user.display_name}")
+
+  await interaction.response.send_message(embed=embed)
+
+
+# --- CLANES Y OTROS ---
 @bot.tree.command(
     name="crear-clan",
     description=(
@@ -928,7 +1176,7 @@ async def crear_clan(interaction: discord.Interaction, nombre_clan: str):
     char = await get_active_character(db, interaction.user.id)
     if not char:
       return await interaction.response.send_message(
-          "🦊 Necesitas un personaje activo.", ephemeral=True
+          "🦊 Necesitas un personaje activo y aprobado.", ephemeral=True
       )
 
     if char[14] < CLAN_COST_COPPER:
@@ -960,7 +1208,8 @@ async def comprar_slot(interaction: discord.Interaction):
     char = await get_active_character(db, user_id)
     if not char:
       return await interaction.response.send_message(
-          "🦊 Necesitas al menos un personaje registrado.", ephemeral=True
+          "🦊 Necesitas al menos un personaje activo y aprobado.",
+          ephemeral=True,
       )
 
     async with db.execute(
@@ -1013,7 +1262,7 @@ async def cuenta(interaction: discord.Interaction):
 
   if not char:
     return await interaction.response.send_message(
-        "🦊 No tienes un personaje activo.", ephemeral=True
+        "🦊 No tienes un personaje activo y aprobado.", ephemeral=True
     )
 
   money_str = format_currency(char[14], icons)
@@ -1039,7 +1288,7 @@ async def daily(interaction: discord.Interaction):
 
     if not char:
       return await interaction.response.send_message(
-          "🦊 No tienes un personaje activo.", ephemeral=True
+          "🦊 No tienes un personaje activo y aprobado.", ephemeral=True
       )
 
     if char[18] == today:
@@ -1081,7 +1330,8 @@ async def pagar(
 
     if not sender or not receiver:
       return await interaction.response.send_message(
-          "🦊 Ambos jugadores deben tener un personaje activo.", ephemeral=True
+          "🦊 Ambos jugadores deben tener un personaje activo y aprobado.",
+          ephemeral=True,
       )
 
     if sender[14] < cantidad_cobre:
@@ -1112,7 +1362,7 @@ async def inventario(interaction: discord.Interaction):
     char = await get_active_character(db, interaction.user.id)
     if not char:
       return await interaction.response.send_message(
-          "🦊 No tienes un personaje activo.", ephemeral=True
+          "🦊 No tienes un personaje activo y aprobado.", ephemeral=True
       )
 
     async with db.execute(
@@ -1140,7 +1390,7 @@ async def usar(interaction: discord.Interaction, item: str):
     char = await get_active_character(db, interaction.user.id)
     if not char:
       return await interaction.response.send_message(
-          "🦊 No tienes un personaje activo.", ephemeral=True
+          "🦊 No tienes un personaje activo y aprobado.", ephemeral=True
       )
 
     async with db.execute(
@@ -1185,7 +1435,7 @@ async def craftear(interaction: discord.Interaction, receta: str):
     char = await get_active_character(db, interaction.user.id)
     if not char:
       return await interaction.response.send_message(
-          "🦊 No tienes un personaje activo.", ephemeral=True
+          "🦊 No tienes un personaje activo y aprobado.", ephemeral=True
       )
 
     for ing, req_qty in ingredients.items():
@@ -1240,7 +1490,8 @@ async def dar_item(
     char = await get_active_character(db, usuario.id)
     if not char:
       return await interaction.response.send_message(
-          "🦊 El objetivo no tiene un personaje activo.", ephemeral=True
+          "🦊 El objetivo no tiene un personaje activo y aprobado.",
+          ephemeral=True,
       )
 
     await db.execute(
@@ -1323,12 +1574,10 @@ async def prueba(interaction: discord.Interaction, atributo: str):
     char = await get_active_character(db, interaction.user.id)
     if not char:
       return await interaction.response.send_message(
-          "🦊 No tienes un personaje activo.", ephemeral=True
+          "🦊 No tienes un personaje activo y aprobado.", ephemeral=True
       )
 
-    attr_index = {"fuerza": 10, "defensa": 11, "agilidad": 12, "magia": 13}[
-        attr
-    ]
+    attr_index = {"fuerza": 10, "defensa": 11, "agilidad": 12, "magia": 13}[attr]
     attr_val = char[attr_index]
 
   roll = random.randint(1, 20)
@@ -1354,7 +1603,8 @@ async def explorar(interaction: discord.Interaction):
     char = await get_active_character(db, user_id)
     if not char:
       return await interaction.response.send_message(
-          "🦊 Necesitas un personaje activo para explorar.", ephemeral=True
+          "🦊 Necesitas un personaje activo y aprobado para explorar.",
+          ephemeral=True,
       )
 
     char_id, str_, agi, explores, last_date = (
@@ -1388,12 +1638,14 @@ async def explorar(interaction: discord.Interaction):
 
     await db.commit()
 
-  view = DungeonExploreView(char_id, {"fuerza": str_, "agilidad": agi}, abyss_mod)
+  view = DungeonExploreView(
+      char_id, {"fuerza": str_, "agilidad": agi}, abyss_mod
+  )
   embed = discord.Embed(
       title=f"🌿 Entrada a la Cueva Olvidada ({char[2]})",
       description=(
-          "🦊 Has encontrado una cueva. ¿Deseas"
-          f" adentrarte?\n*Intentos restantes hoy: {explores}*"
+          "🦊 Has encontrado una cueva. ¿Deseas adentrarte?\n*Intentos"
+          f" restantes hoy: {explores}*"
       ),
       color=discord.Color.dark_blue(),
   )
@@ -1501,7 +1753,6 @@ async def evento_crear(
       master_name=interaction.user.display_name,
       max_participants=max_participantes,
   )
-
   embed = discord.Embed(
       title=f"📜 EVENTO: {titulo}",
       description=f"{descripcion}\n\n**Dificultad:** {dificultad}",
