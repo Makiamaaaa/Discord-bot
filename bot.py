@@ -53,11 +53,11 @@ CLASS_GROWTH = {
 }
 
 DUNGEON_TIERS = {
-    "Fácil": {"weight": 50, "dc": 10, "loot": "Mineral de Hierro", "qty": (1, 3), "soles": 50},
-    "Normal": {"weight": 30, "dc": 14, "loot": "Hongo Abisal", "qty": (2, 4), "soles": 150},
-    "Difícil": {"weight": 13, "dc": 18, "loot": "Madera Antigua", "qty": (3, 5), "soles": 400},
-    "Épica": {"weight": 6, "dc": 22, "loot": "Fragmento de Alma", "qty": (4, 6), "soles": 1000},
-    "Legendaria": {"weight": 1, "dc": 26, "loot": "Hierba Curativa", "qty": (5, 8), "soles": 2500},
+    "Fácil": {"weight": 50, "dc": 10, "loot": "Mineral de Hierro", "qty": (1, 3), "coronas": 50},
+    "Normal": {"weight": 30, "dc": 14, "loot": "Hongo Abisal", "qty": (2, 4), "coronas": 150},
+    "Difícil": {"weight": 13, "dc": 18, "loot": "Madera Antigua", "qty": (3, 5), "coronas": 400},
+    "Épica": {"weight": 6, "dc": 22, "loot": "Fragmento de Alma", "qty": (4, 6), "coronas": 1000},
+    "Legendaria": {"weight": 1, "dc": 26, "loot": "Hierba Curativa", "qty": (5, 8), "coronas": 2500},
 }
 
 CRAFTING_RECIPES = {
@@ -66,11 +66,11 @@ CRAFTING_RECIPES = {
 }
 
 DIFFICULTIES = {
-    "Fácil": {"exp": 100, "soles": 100, "copas": 1, "favor": 0},
-    "Normal": {"exp": 250, "soles": 250, "copas": 2, "favor": 1},
-    "Difícil": {"exp": 500, "soles": 500, "copas": 4, "favor": 2},
-    "Épica": {"exp": 900, "soles": 900, "copas": 7, "favor": 4},
-    "Legendaria": {"exp": 1500, "soles": 1500, "copas": 12, "favor": 7},
+    "Fácil": {"exp": 100, "coronas": 100, "copas": 1, "favor": 0},
+    "Normal": {"exp": 250, "coronas": 250, "copas": 2, "favor": 1},
+    "Difícil": {"exp": 500, "coronas": 500, "copas": 4, "favor": 2},
+    "Épica": {"exp": 900, "coronas": 900, "copas": 7, "favor": 4},
+    "Legendaria": {"exp": 1500, "coronas": 1500, "copas": 12, "favor": 7},
 }
 
 SLOT_PRICE_COPPER = 10000
@@ -123,7 +123,7 @@ async def init_db():
                 inteligencia INTEGER DEFAULT 10,
                 sabiduria INTEGER DEFAULT 10,
                 carisma INTEGER DEFAULT 10,
-                soles INTEGER DEFAULT 100,
+                coronas INTEGER DEFAULT 100,
                 copas INTEGER DEFAULT 0,
                 favor_divino INTEGER DEFAULT 0,
                 daily_explores INTEGER DEFAULT 2,
@@ -865,7 +865,7 @@ async def perfil(interaction: discord.Interaction, usuario: discord.User = None)
     embed.add_field(name="Bóveda", value=f"💰 {money_str}\n{icons['copas']} **Copas:** {copas}\n{icons['favor']} **Favor Divino:** {favor}", inline=False)
     
     embed.add_field(
-        name="⚔️ Atributos D&D 2024",
+        name="⚔️ Atributos",
         value=(
             f"💪 **FUE:** {str_} (`{get_dnd_modifier(str_):+d}`) | 💨 **DES:** {dex} (`{get_dnd_modifier(dex):+d}`)\n"
             f"🛡️ **CON:** {con} (`{get_dnd_modifier(con):+d}`) | 🧠 **INT:** {int_} (`{get_dnd_modifier(int_):+d}`)\n"
@@ -1227,7 +1227,7 @@ async def explorar(interaction: discord.Interaction):
     if random.random() < 0.50:
         embed = discord.Embed(
             title=f"🌿 Exploración Frustrada ({char[2]})",
-            description=f"🦊 No hallaste entradas a mazmorras hoy.\n\n*Intentos restantes: {explores}*",
+            description=f"🦊 No hallaste entradas a una mazmorras hoy.\n\n*Intentos restantes: {explores}*",
             color=discord.Color.dark_grey(),
         )
         return await interaction.response.send_message(embed=embed)
@@ -1318,7 +1318,7 @@ async def evento_crear(
 
     view = EventJoinView(master_name=interaction.user.display_name, max_participants=max_participantes)
     embed = discord.Embed(
-        title=f"📜 EVENTO: {titulo}",
+        title=f"📨 MISION: {titulo}",
         description=f"{descripcion}\n\n**Dificultad:** {dificultad}",
         color=discord.Color.dark_red(),
     )
