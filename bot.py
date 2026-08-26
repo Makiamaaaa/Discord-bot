@@ -420,10 +420,10 @@ class EventJoinView(discord.ui.View):
         user_mention = interaction.user.mention
         if user_mention in self.participants:
             self.participants.remove(user_mention)
-            msg = "🦊 Te has retirado del evento."
+            msg = "🦊 Te has retirado de la misión."
         else:
             if len(self.participants) >= self.max_participants:
-                return await interaction.response.send_message("🦊 El evento alcanzó el cupo máximo.", ephemeral=True)
+                return await interaction.response.send_message("🦊 La misión alcanzó el cupo máximo.", ephemeral=True)
             self.participants.append(user_mention)
             msg = "⚔️ ¡Te has inscrito en la misión!"
 
@@ -681,37 +681,89 @@ async def on_ready():
     daily_weather_task.start()
     print(f"🦊 Lumen se ha despertado como {bot.user}")
 
+# --- SISTEMA DE CLIMA ROTATIVO ---
+CLIMAS_DISPONIBLES = [
+    (
+        "Estable", 
+        0, 
+        "Una brisa serena y templada perfecto para recorrer los valles de Elaris. El cielo despejado transmite una calma absoluta sobre la tierra."
+    ),
+    (
+        "Tormentoso", 
+        -2, 
+        "Nubarrones oscuros descargan una lluvia torrencial acompañada de truenos retumbantes. El lodo y los rayos dificultan cualquier travesía."
+    ),
+    (
+        "Caluroso", 
+        1, 
+        "Un sol abrasador cae sin piedad sobre Elaris. El calor sofocante y la ausencia total de viento agotan a los viajeros más de lo normal."
+    ),
+    (
+        "Gélido", 
+        -1, 
+        "Vientos helados del norte cubren los caminos con escarcha y nieve. El frío penetrante congela los alientos de los caminantes."
+    ),
+    (
+        "Niebla Abisal", 
+        -3, 
+        "Una miasma densa y verdosa emerge de las grietas de Elaris. La visibilidad es casi nula y susurros extraños inquietan la mente."
+    ),
+    (
+        "Tormenta de Almas", 
+        2, 
+        "Vértices de energía arcana purpúrea iluminan los cielos. La resonancia mágica del Abismo fortalece los dados y la suerte de los aventureros."
+    ),
+    (
+        "Vendaval Caótico", 
+        -1, 
+        "Ráfagas violentas de viento arrastran polvo y escombros por todas direcciones, dificultando la visibilidad y los movimientos precisos."
+    ),
+    (
+        "Lluvia Astral", 
+        2, 
+        "Diminutas partículas brillantes caen del cielo nocturno como gotas de luz. Una atmósfera mística recarga las energías de quienes la presencian."
+    ),
+    (
+        "Eclipse Umbrío", 
+        -2, 
+        "La luna bloquea la luz cósmica tiñendo el firmamento de un rojo penumbroso. Las sombras se alargan y el ambiente se vuelve opresivo."
+    ),
+    (
+        "Brisa de Maná", 
+        1, 
+        "Un aire fresco cargado de esporas luminosas reconforta a los transeúntes, otorgando una sensación de vigor y agudeza mental."
+    )
+]
+
 @tasks.loop(hours=24)
 async def daily_weather_task():
-    await bot.wait_until_ready()
+    st_name, st_mod, st_weather = random.choice(CLIMAS_DISPONIBLES)
+    
     async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT channel_id FROM weather_config WHERE id = 1") as cursor:
-            row = await cursor.fetchone()
-            if not row or not row[0]:
-                return
-            channel_id = row[0]
-
-        states = [
-            ("Sereno", 0, "Una brisa pacífica recorre Elaris."),
-            ("Niebla Abisal", -1, "Miasma denso reduce la visibilidad."),
-            ("Tormenta de Almas", 2, "La energía del Abismo fortalece los dados."),
-        ]
-        st_name, st_mod, st_weather = random.choice(states)
         await db.execute(
             "UPDATE abyss_state SET state_name = ?, modifier = ?, weather = ? WHERE id = 1",
             (st_name, st_mod, st_weather),
         )
         await db.commit()
 
-    channel = bot.get_channel(channel_id)
-    if channel:
-        embed = discord.Embed(
-            title="🌌 Reporte Diario del Clima y del Abismo",
-            description=f"**Estado del Abismo:** {st_name} (Mod: {st_mod})\n**Clima:** {st_weather}",
-            color=discord.Color.dark_purple(),
-        )
-        embed.set_footer(text="🦊 Lumen vigila los cambios de Elaris.")
-        await channel.send(embed=embed)
+        async with db.execute("SELECT channel_id FROM weather_config WHERE id = 1") as cursor:
+            row = await cursor.fetchone()
+            channel_id = row[0] if row else None
+
+    if channel_id:
+        channel = bot.get_channel(channel_id)
+        if channel:
+            embed = discord.Embed(
+                title="🌌 Reporte Diario del Clima y del Abismo",
+                description=f"**Estado del Abismo:** {st_name} (Modificador: `{st_mod:+d}`)\n\n**Clima:** {st_weather}",
+                color=discord.Color.dark_purple(),
+            )
+            embed.set_footer(text="🦊 Lumen vigila los cambios de Elaris.")
+            await channel.send(embed=embed)
+
+@daily_weather_task.before_loop
+async def antes_de_clima():
+    await bot.wait_until_ready()
 
 # --- COMANDOS COMUNIDAD ---
 @bot.tree.command(name="lumen", description="Muestra la información de Lumen")
